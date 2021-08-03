@@ -1,5 +1,5 @@
 import dataclasses
-from typing import List
+from typing import List, Optional
 
 from precisely import assert_that, contains_exactly, has_attrs
 import pytest
@@ -27,15 +27,6 @@ def pipe(from_type, to_type):
     return f
 
 
-@dataclasses.dataclass(frozen=True)
-class Query:
-    of_type: type
-    filters: List[object]
-
-    def where(self, filter: object):
-        return dataclasses.replace(self, filters=self.filters + (filter, ))
-
-
 def entity(cls):
     cls = dataclasses.dataclass(frozen=True)(cls)
 
@@ -45,29 +36,14 @@ def entity(cls):
     return cls
 
 
-@dataclasses.dataclass(frozen=True)
-class FilterEqual:
-    left: object
-    right: object
-
-
-def eq(left, right):
-    return FilterEqual(left, right)
-
-
-def query(of_type):
-    return Query(of_type=of_type, filters=())
-
-
 class Executor:
-    def __init__(self, *, sources, pipes):
-        self._sources = sources
+    def __init__(self, *, pipes):
         self._pipes = pipes
 
     def fetch(self, query):
-        for source in self._sources:
-            if query.of_type == source.of_type:
-                return source(query)
+        for pipe in self._pipes:
+            if isinstance(query, pipe.from_type):
+                return pipe(query)
 
 
 ### SQLAlchemy
@@ -85,8 +61,20 @@ class Post:
     title: str
     body: str
 
+    @staticmethod
+    def query():
+        return PostQuery(title=None)
 
-### Models
+
+@dataclasses.dataclass
+class PostQuery:
+    title: Optional[str]
+
+    def has_title(self, title: str):
+        return dataclasses.replace(self, title=title)
+
+
+### SQL Models
 
 
 class PostModel(Base):
@@ -100,20 +88,16 @@ class PostModel(Base):
 ### Plumbing
 
 
-@source(Post)
-class PostSqlSource:
+@pipe(PostQuery, Post)
+class PostQueryToPostPipe:
     def __init__(self, *, session):
         self._session = session
 
     def __call__(self, query):
         sql_query = select(PostModel)
 
-        for filter in query.filters:
-            assert isinstance(filter, FilterEqual)
-            fields_to_sql_expression = {
-                Post.title: PostModel.title
-            }
-            sql_query = sql_query.filter(fields_to_sql_expression[filter.left] == filter.right)
+        if query.title is not None:
+            sql_query = sql_query.filter(PostModel.title == query.title)
 
         return self._session.execute(sql_query).scalars().all()
 
@@ -127,9 +111,9 @@ def test_can_fetch_all_posts(session):
     session.add_all([post_model_1, post_model_2])
     session.commit()
 
-    executor = Executor(sources=[PostSqlSource(session=session)], pipes=[])
+    executor = Executor(pipes=[PostQueryToPostPipe(session=session)])
 
-    results = executor.fetch(query(Post))
+    results = executor.fetch(Post.query())
 
     assert_that(results, contains_exactly(
         has_attrs(
@@ -149,12 +133,9 @@ def test_can_filter_posts(session):
     session.add_all([post_model_1, post_model_2])
     session.commit()
 
-    executor = Executor(
-        sources=[PostSqlSource(session=session)],
-        pipes=[],
-    )
+    executor = Executor(pipes=[PostQueryToPostPipe(session=session)])
 
-    post_query = query(Post).where(eq(Post.title, "<post 1>"))
+    post_query = Post.query().has_title("<post 1>")
     results = executor.fetch(post_query)
 
     assert_that(results, contains_exactly(

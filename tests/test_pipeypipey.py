@@ -46,7 +46,7 @@ class Executor:
                 else:
                     return pipe(self, query, parents=parents)
 
-        return []
+        raise ValueError(f"could not fetch {query}")
 
 
 ### SQLAlchemy

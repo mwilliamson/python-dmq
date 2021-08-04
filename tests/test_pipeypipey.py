@@ -21,6 +21,16 @@ def pipe(from_type, to_type, *, parent_type = None):
     return f
 
 
+def source(from_type, to_type):
+    def f(cls):
+        cls.from_type = from_type
+        cls.to_type = to_type
+
+        return cls
+
+    return f
+
+
 def entity(cls):
     cls = dataclasses.dataclass(frozen=True)(cls)
 
@@ -35,16 +45,21 @@ def field(query):
 
 
 class Executor:
-    def __init__(self, *, pipes):
+    def __init__(self, *, sources, pipes):
+        self._sources = sources
         self._pipes = pipes
 
     def fetch(self, query, *, parent_type = None, parents = None):
+        for source in self._sources:
+            if isinstance(query, source.from_type):
+                return source(self, query)
+
+        raise ValueError(f"could not fetch {query}")
+
+    def fetch_field(self, query, *, parent_type, parents):
         for pipe in self._pipes:
             if isinstance(query, pipe.from_type) and pipe.parent_type == parent_type:
-                if parents is None:
-                    return pipe(self, query)
-                else:
-                    return pipe(self, query, parents=parents)
+                return pipe(self, query, parents=parents)
 
         raise ValueError(f"could not fetch {query}")
 
@@ -117,10 +132,8 @@ class CommentModel(Base):
 ### Plumbing
 
 
-@pipe(PostQuery, Post)
-class PostQueryToPostPipe:
-    parent_type = None
-
+@source(PostQuery, Post)
+class PostQueryToPostSource:
     def __init__(self, *, session):
         self._session = session
 
@@ -140,7 +153,7 @@ class PostQueryToPostPipe:
         for field in dataclasses.fields(query.cls):
             field_query = field.metadata.get("query")
             if field_query is not None:
-                field_values = executor.fetch(field_query, parent_type=Post, parents=post_dicts.values())
+                field_values = executor.fetch_field(field_query, parent_type=Post, parents=post_dicts.values())
                 for post_id, field_value in field_values:
                     post_dicts[post_id][field.name] = field_value
 
@@ -177,7 +190,10 @@ def test_can_fetch_all_posts(session):
     session.add_all([post_model_1, post_model_2])
     session.commit()
 
-    executor = Executor(pipes=[PostQueryToPostPipe(session=session)])
+    executor = Executor(
+        sources=[PostQueryToPostSource(session=session)],
+        pipes=[],
+    )
 
     results = executor.fetch(Post.query())
 
@@ -199,7 +215,10 @@ def test_can_filter_posts(session):
     session.add_all([post_model_1, post_model_2])
     session.commit()
 
-    executor = Executor(pipes=[PostQueryToPostPipe(session=session)])
+    executor = Executor(
+        sources=[PostQueryToPostSource(session=session)],
+        pipes=[],
+    )
 
     post_query = Post.query().has_title("<post 1>")
     results = executor.fetch(post_query)
@@ -221,10 +240,8 @@ def test_can_add_fields_to_objects(session):
     session.commit()
 
     executor = Executor(
-        pipes=[
-            PostQueryToPostPipe(session=session),
-            PostCommentQueryToCommentPipe(session=session),
-        ],
+        sources=[PostQueryToPostSource(session=session)],
+        pipes=[PostCommentQueryToCommentPipe(session=session)],
     )
 
     @entity

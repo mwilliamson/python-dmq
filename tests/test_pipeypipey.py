@@ -49,7 +49,7 @@ class Executor:
         self._sources = sources
         self._pipes = pipes
 
-    def fetch(self, query, *, parent_type = None, parents = None):
+    def fetch(self, query):
         for source in self._sources:
             if isinstance(query, source.from_type):
                 return source(self, query)

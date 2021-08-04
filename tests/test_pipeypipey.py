@@ -1,6 +1,8 @@
+from __future__ import annotations
+
 import collections
 import dataclasses
-from typing import List, Optional
+from typing import Any, Dict, Generic, List, Optional, Type, TypeVar
 
 from precisely import assert_that, contains_exactly, has_attrs
 import pytest
@@ -44,12 +46,19 @@ def field(query):
     return dataclasses.field(metadata={"query": query})
 
 
+T = TypeVar("T")
+
+
+class Query(Generic[T]):
+    pass
+
+
 class Executor:
     def __init__(self, *, sources, pipes):
         self._sources = sources
         self._pipes = pipes
 
-    def fetch(self, query):
+    def fetch(self, query: Query[T]) -> List[T]:
         for source in self._sources:
             if isinstance(query, source.from_type):
                 return source(self, query)
@@ -73,34 +82,34 @@ Base = declarative_base()
 ### Domain
 
 
-@entity
+@dataclasses.dataclass(frozen=True)
 class Post:
     id: int
     title: str
     body: str
 
     @classmethod
-    def query(cls):
+    def query(cls: Type[T]) -> PostQuery[T]:
         return PostQuery(cls, title=None)
 
 
 @dataclasses.dataclass(frozen=True)
-class PostQuery:
-    cls: type
+class PostQuery(Query[T]):
+    result_type: Type[T]
     title: Optional[str]
 
-    def has_title(self, title: str):
+    def has_title(self, title: str) -> PostQuery[T]:
         return dataclasses.replace(self, title=title)
 
 
-@entity
+@dataclasses.dataclass(frozen=True)
 class Comment:
     id: int
     author: str
     body: str
 
     @staticmethod
-    def query_for_post():
+    def query() -> CommentQuery:
         return CommentQuery()
 
 
@@ -126,7 +135,7 @@ class CommentModel(Base):
     author = Column(String, nullable=False)
     body = Column(String, nullable=False)
     post_id = Column(Integer, ForeignKey("post.id"), nullable=False)
-    post = relationship(PostModel)
+    post = relationship(PostModel, uselist=False)
 
 
 ### Plumbing
@@ -134,10 +143,10 @@ class CommentModel(Base):
 
 @source(PostQuery, Post)
 class PostQueryToPostSource:
-    def __init__(self, *, session):
+    def __init__(self, *, session: Session):
         self._session = session
 
-    def __call__(self, executor, query):
+    def __call__(self, executor: Executor, query: PostQuery[T]) -> List[T]:
         sql_query = select(PostModel)
 
         if query.title is not None:
@@ -145,31 +154,30 @@ class PostQueryToPostSource:
 
         post_models = self._session.execute(sql_query).scalars().all()
 
-        post_dicts = {
-            post_model.id: dict(id=post_model.id, title=post_model.title, body=post_model.body)
-            for post_model in post_models
-        }
+        posts = [Post(id=post_model.id, title=post_model.title, body=post_model.body) for post_model in post_models]
 
-        for field in dataclasses.fields(query.cls):
+        extra_field_values: List[Dict[str, Any]] = [{} for _ in posts]
+
+        for field in dataclasses.fields(query.result_type):
             field_query = field.metadata.get("query")
             if field_query is not None:
-                field_values = executor.fetch_field(field_query, parent_type=Post, parents=post_dicts.values())
-                for post_id, field_value in field_values:
-                    post_dicts[post_id][field.name] = field_value
+                field_values = executor.fetch_field(field_query, parent_type=Post, parents=posts)
+                for field_values, field_value in zip(extra_field_values, field_values):
+                    field_values[field.name] = field_value
 
         return [
-            query.cls(**post_dict)
-            for post_dict in post_dicts.values()
+            query.result_type(**dataclasses.asdict(post), **field_values)  # type: ignore
+            for post, field_values in zip(posts, extra_field_values)
         ]
 
 
 @pipe(CommentQuery, Comment, parent_type=Post)
 class PostCommentQueryToCommentPipe:
-    def __init__(self, *, session):
+    def __init__(self, *, session: Session):
         self._session = session
 
-    def __call__(self, executor, query, *, parents):
-        sql_query = select(CommentModel).where(CommentModel.post_id.in_([parent["id"] for parent in parents]))
+    def __call__(self, executor: Executor, query: CommentQuery, *, parents: List[Post]):
+        sql_query = select(CommentModel).where(CommentModel.post_id.in_([parent.id for parent in parents]))
 
         comment_models = self._session.execute(sql_query).scalars().all()
 
@@ -178,13 +186,13 @@ class PostCommentQueryToCommentPipe:
             comment = Comment(id=comment_model.id, author=comment_model.author, body=comment_model.body)
             result[comment_model.post_id].append(comment)
 
-        return result.items()
+        return [result[parent.id] for parent in parents]
 
 
 ### Tests
 
 
-def test_can_fetch_all_posts(session):
+def test_can_fetch_all_posts(session: Session) -> None:
     post_model_1 = PostModel(title="<post 1>", body="")
     post_model_2 = PostModel(title="<post 2>", body="")
     session.add_all([post_model_1, post_model_2])
@@ -209,7 +217,7 @@ def test_can_fetch_all_posts(session):
     ))
 
 
-def test_can_filter_posts(session):
+def test_can_filter_posts(session: Session) -> None:
     post_model_1 = PostModel(title="<post 1>", body="")
     post_model_2 = PostModel(title="<post 2>", body="")
     session.add_all([post_model_1, post_model_2])
@@ -230,7 +238,7 @@ def test_can_filter_posts(session):
     ))
 
 
-def test_can_add_fields_to_objects(session):
+def test_can_add_fields_to_objects(session: Session) -> None:
     post_model_1 = PostModel(title="<post 1>", body="")
     comment_model_1a = CommentModel(body="<comment 1a>", post=post_model_1, author="<author>")
     comment_model_1b = CommentModel(body="<comment 1b>", post=post_model_1, author="<author>")
@@ -246,7 +254,7 @@ def test_can_add_fields_to_objects(session):
 
     @entity
     class PostWithComments(Post):
-        comments: List[Comment] = field(Comment.query_for_post())
+        comments: List[Comment] = field(Comment.query())
 
     post_query = PostWithComments.query()
     results = executor.fetch(post_query)

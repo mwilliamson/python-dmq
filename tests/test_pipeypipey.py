@@ -12,7 +12,7 @@ from sqlalchemy.orm import declarative_base, relationship, Session
 ### pipepipey
 
 
-def pipe(from_type, to_type, *, parent_type = None):
+def field_fetcher(from_type, to_type, *, parent_type = None):
     def f(cls):
         cls.from_type = from_type
         cls.to_type = to_type
@@ -23,7 +23,7 @@ def pipe(from_type, to_type, *, parent_type = None):
     return f
 
 
-def source(from_type, to_type):
+def root_fetcher(from_type, to_type):
     def f(cls):
         cls.from_type = from_type
         cls.to_type = to_type
@@ -54,21 +54,21 @@ class Query(Generic[T]):
 
 
 class Executor:
-    def __init__(self, *, sources, pipes):
-        self._sources = sources
-        self._pipes = pipes
+    def __init__(self, *, root_fetchers, field_fetchers):
+        self._root_fetchers = root_fetchers
+        self._field_fetchers = field_fetchers
 
     def fetch(self, query: Query[T]) -> List[T]:
-        for source in self._sources:
-            if isinstance(query, source.from_type):
-                return source(self, query)
+        for fetcher in self._root_fetchers:
+            if isinstance(query, fetcher.from_type):
+                return fetcher(self, query)
 
         raise ValueError(f"could not fetch {query}")
 
     def fetch_field(self, query, *, parent_type, parents):
-        for pipe in self._pipes:
-            if isinstance(query, pipe.from_type) and pipe.parent_type == parent_type:
-                return pipe(self, query, parents=parents)
+        for fetcher in self._field_fetchers:
+            if isinstance(query, fetcher.from_type) and fetcher.parent_type == parent_type:
+                return fetcher(self, query, parents=parents)
 
         raise ValueError(f"could not fetch {query}")
 
@@ -141,8 +141,8 @@ class CommentModel(Base):
 ### Plumbing
 
 
-@source(PostQuery, Post)
-class PostQueryToPostSource:
+@root_fetcher(PostQuery, Post)
+class PostFetcher:
     def __init__(self, *, session: Session):
         self._session = session
 
@@ -171,8 +171,8 @@ class PostQueryToPostSource:
         ]
 
 
-@pipe(CommentQuery, Comment, parent_type=Post)
-class PostCommentQueryToCommentPipe:
+@field_fetcher(CommentQuery, Comment, parent_type=Post)
+class PostCommentFetcher:
     def __init__(self, *, session: Session):
         self._session = session
 
@@ -199,8 +199,8 @@ def test_can_fetch_all_posts(session: Session) -> None:
     session.commit()
 
     executor = Executor(
-        sources=[PostQueryToPostSource(session=session)],
-        pipes=[],
+        root_fetchers=[PostFetcher(session=session)],
+        field_fetchers=[],
     )
 
     results = executor.fetch(Post.query())
@@ -224,8 +224,8 @@ def test_can_filter_posts(session: Session) -> None:
     session.commit()
 
     executor = Executor(
-        sources=[PostQueryToPostSource(session=session)],
-        pipes=[],
+        root_fetchers=[PostFetcher(session=session)],
+        field_fetchers=[],
     )
 
     post_query = Post.query().has_title("<post 1>")
@@ -248,8 +248,8 @@ def test_can_add_fields_to_objects(session: Session) -> None:
     session.commit()
 
     executor = Executor(
-        sources=[PostQueryToPostSource(session=session)],
-        pipes=[PostCommentQueryToCommentPipe(session=session)],
+        root_fetchers=[PostFetcher(session=session)],
+        field_fetchers=[PostCommentFetcher(session=session)],
     )
 
     @entity

@@ -51,7 +51,7 @@ T = TypeVar("T")
 
 
 class Query(Generic[T]):
-    pass
+    result_type: Type[T]
 
 
 class Executor:
@@ -171,7 +171,7 @@ class PostFetcher:
     def __init__(self, *, session: Session):
         self._session = session
 
-    def __call__(self, executor: Executor, query: PostQuery[T]) -> List[T]:
+    def __call__(self, executor: Executor, query: PostQuery[T]) -> List[Post]:
         sql_query = select(PostModel)
 
         if query.title is not None:

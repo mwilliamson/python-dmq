@@ -59,11 +59,30 @@ class Executor:
         self._field_fetchers = field_fetchers
 
     def fetch(self, query: Query[T]) -> List[T]:
+        cores = self._fetch_core(query)
+        return self._add_fields(cores, query)
+
+    def _fetch_core(self, query: Query[T]) -> List[T]:
         for fetcher in self._root_fetchers:
             if isinstance(query, fetcher.from_type):
                 return fetcher(self, query)
 
         raise ValueError(f"could not fetch {query}")
+
+    def _add_fields(self, cores: List[T], query: Query[T]) -> List[T]:
+        extra_field_values: List[Dict[str, Any]] = [{} for _ in cores]
+
+        for field in dataclasses.fields(query.result_type):
+            field_query = field.metadata.get("query")
+            if field_query is not None:
+                field_values = self.fetch_field(field_query, parent_type=Post, parents=cores)
+                for field_values, field_value in zip(extra_field_values, field_values):
+                    field_values[field.name] = field_value
+
+        return [
+            query.result_type(**dataclasses.asdict(core), **field_values)  # type: ignore
+            for core, field_values in zip(cores, extra_field_values)
+        ]
 
     def fetch_field(self, query, *, parent_type, parents):
         for fetcher in self._field_fetchers:
@@ -154,21 +173,7 @@ class PostFetcher:
 
         post_models = self._session.execute(sql_query).scalars().all()
 
-        posts = [Post(id=post_model.id, title=post_model.title, body=post_model.body) for post_model in post_models]
-
-        extra_field_values: List[Dict[str, Any]] = [{} for _ in posts]
-
-        for field in dataclasses.fields(query.result_type):
-            field_query = field.metadata.get("query")
-            if field_query is not None:
-                field_values = executor.fetch_field(field_query, parent_type=Post, parents=posts)
-                for field_values, field_value in zip(extra_field_values, field_values):
-                    field_values[field.name] = field_value
-
-        return [
-            query.result_type(**dataclasses.asdict(post), **field_values)  # type: ignore
-            for post, field_values in zip(posts, extra_field_values)
-        ]
+        return [Post(id=post_model.id, title=post_model.title, body=post_model.body) for post_model in post_models]
 
 
 @field_fetcher(CommentQuery, Comment, parent_type=Post)

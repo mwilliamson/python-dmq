@@ -2,11 +2,12 @@ from __future__ import annotations
 
 import collections
 import dataclasses
+from datetime import datetime, timedelta
 from typing import Any, Dict, Generic, List, Optional, Type, TypeVar
 
 from precisely import assert_that, contains_exactly, has_attrs
 import pytest
-from sqlalchemy import Column, create_engine, ForeignKey, Integer, select, String
+from sqlalchemy import Column, create_engine, DateTime, ForeignKey, Integer, select, String
 from sqlalchemy.orm import declarative_base, relationship, Session
 
 ### pipepipey
@@ -125,16 +126,20 @@ class PostQuery(Query[T]):
 class Comment:
     id: int
     author: str
+    created_at: datetime
     body: str
 
     @staticmethod
     def query() -> CommentQuery:
-        return CommentQuery()
+        return CommentQuery(created_in_last=None)
 
 
 @dataclasses.dataclass(frozen=True)
 class CommentQuery:
-    pass
+    created_in_last: Optional[timedelta]
+
+    def recent(self) -> CommentQuery:
+        return dataclasses.replace(self, created_in_last=timedelta(days=1))
 
 ### SQL Models
 
@@ -152,6 +157,7 @@ class CommentModel(Base):
 
     id = Column(Integer, primary_key=True)
     author = Column(String, nullable=False)
+    created_at = Column(DateTime, nullable=False)
     body = Column(String, nullable=False)
     post_id = Column(Integer, ForeignKey("post.id"), nullable=False)
     post = relationship(PostModel, uselist=False)
@@ -178,17 +184,21 @@ class PostFetcher:
 
 @field_fetcher(CommentQuery, Comment, parent_type=Post)
 class PostCommentFetcher:
-    def __init__(self, *, session: Session):
+    def __init__(self, *, now: datetime, session: Session):
+        self._now = now
         self._session = session
 
     def __call__(self, executor: Executor, query: CommentQuery, *, parents: List[Post]):
         sql_query = select(CommentModel).where(CommentModel.post_id.in_([parent.id for parent in parents]))
 
+        if query.created_in_last is not None:
+            sql_query = sql_query.filter(CommentModel.created_at >= (self._now - query.created_in_last))
+
         comment_models = self._session.execute(sql_query).scalars().all()
 
         result = collections.defaultdict(list)
         for comment_model in comment_models:
-            comment = Comment(id=comment_model.id, author=comment_model.author, body=comment_model.body)
+            comment = Comment(id=comment_model.id, author=comment_model.author, body=comment_model.body, created_at=comment_model.created_at)
             result[comment_model.post_id].append(comment)
 
         return [result[parent.id] for parent in parents]
@@ -245,16 +255,16 @@ def test_can_filter_posts(session: Session) -> None:
 
 def test_can_add_fields_to_objects(session: Session) -> None:
     post_model_1 = PostModel(title="<post 1>", body="")
-    comment_model_1a = CommentModel(body="<comment 1a>", post=post_model_1, author="<author>")
-    comment_model_1b = CommentModel(body="<comment 1b>", post=post_model_1, author="<author>")
+    comment_model_1a = CommentModel(body="<comment 1a>", post=post_model_1, author="<author>", created_at=datetime(2000, 1, 1))
+    comment_model_1b = CommentModel(body="<comment 1b>", post=post_model_1, author="<author>", created_at=datetime(2000, 1, 1))
     post_model_2 = PostModel(title="<post 2>", body="")
-    comment_model_2a = CommentModel(body="<comment 2a>", post=post_model_2, author="<author>")
+    comment_model_2a = CommentModel(body="<comment 2a>", post=post_model_2, author="<author>", created_at=datetime(2000, 1, 1))
     session.add_all([post_model_1, comment_model_1a, comment_model_1b, post_model_2, comment_model_2a])
     session.commit()
 
     executor = Executor(
         root_fetchers=[PostFetcher(session=session)],
-        field_fetchers=[PostCommentFetcher(session=session)],
+        field_fetchers=[PostCommentFetcher(session=session, now=datetime(2020, 1, 1, 12))],
     )
 
     @entity
@@ -277,6 +287,41 @@ def test_can_add_fields_to_objects(session: Session) -> None:
             comments=contains_exactly(
                 has_attrs(body="<comment 2a>"),
             ),
+        ),
+    ))
+
+
+def test_can_filter_fields_added_to_objects(session: Session) -> None:
+    post_model_1 = PostModel(title="<post 1>", body="")
+    comment_model_1a = CommentModel(body="<comment 1a>", post=post_model_1, author="<author>", created_at=datetime(2000, 1, 1))
+    comment_model_1b = CommentModel(body="<comment 1b>", post=post_model_1, author="<author>", created_at=datetime(2021, 1, 1))
+    post_model_2 = PostModel(title="<post 2>", body="")
+    comment_model_2a = CommentModel(body="<comment 2a>", post=post_model_2, author="<author>", created_at=datetime(2000, 1, 1))
+    session.add_all([post_model_1, comment_model_1a, comment_model_1b, post_model_2, comment_model_2a])
+    session.commit()
+
+    executor = Executor(
+        root_fetchers=[PostFetcher(session=session)],
+        field_fetchers=[PostCommentFetcher(session=session, now=datetime(2021, 1, 1, 12))],
+    )
+
+    @entity
+    class PostWithRecentComments(Post):
+        recent_comments: List[Comment] = field(Comment.query().recent())
+
+    post_query = PostWithRecentComments.query()
+    results = executor.fetch(post_query)
+
+    assert_that(results, contains_exactly(
+        has_attrs(
+            title="<post 1>",
+            recent_comments=contains_exactly(
+                has_attrs(body="<comment 1b>"),
+            ),
+        ),
+        has_attrs(
+            title="<post 2>",
+            recent_comments=contains_exactly(),
         ),
     ))
 

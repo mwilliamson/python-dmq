@@ -1,5 +1,5 @@
 import dataclasses
-from typing import Any, Dict, Generic, List, Type, TypeVar
+from typing import Any, Dict, Generic, List, Tuple, Type, TypeVar
 
 
 def field_fetcher(from_type, to_type, *, parent_type = None):
@@ -52,7 +52,7 @@ class Executor:
         core_type, cores = self._fetch_core(query)
         return self._add_fields(cores, query, parent_type=core_type)
 
-    def _fetch_core(self, query: Query[T]) -> List[T]:
+    def _fetch_core(self, query: Query[T]) -> Tuple[Type[T], List[T]]:
         for fetcher in self._root_fetchers:
             if isinstance(query, fetcher.from_type):
                 return fetcher.to_type, fetcher(self, query)

@@ -9,6 +9,7 @@ from precisely import assert_that, contains_exactly, has_attrs
 import pytest
 from sqlalchemy import Column, create_engine, DateTime, ForeignKey, Integer, select, String
 from sqlalchemy.orm import declarative_base, relationship, Session
+from sqlalchemy.orm.relationships import RelationshipProperty
 
 import dmq
 
@@ -81,6 +82,13 @@ class UserQuery(dmq.Query[T]):
 ### SQL Models
 
 
+class UserModel(Base):
+    __tablename__ = "user"
+
+    id = Column(Integer, primary_key=True)
+    username = Column(String, nullable=False)
+
+
 class PostModel(Base):
     __tablename__ = "post"
 
@@ -94,18 +102,11 @@ class CommentModel(Base):
 
     id = Column(Integer, primary_key=True)
     author_id = Column(Integer, ForeignKey("user.id"), nullable=False)
-    author = relationship(lambda: UserModel, uselist=False)
+    author = relationship(UserModel, uselist=False)
     created_at = Column(DateTime, nullable=False)
     body = Column(String, nullable=False)
     post_id = Column(Integer, ForeignKey("post.id"), nullable=False)
     post = relationship(PostModel, uselist=False)
-
-
-class UserModel(Base):
-    __tablename__ = "user"
-
-    id = Column(Integer, primary_key=True)
-    username = Column(String, nullable=False)
 
 
 ### Plumbing

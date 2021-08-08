@@ -3,124 +3,14 @@ from __future__ import annotations
 import collections
 import dataclasses
 from datetime import datetime, timedelta
-from typing import Any, Dict, Generic, List, Optional, Type, TypeVar
+from typing import List, Optional, Type, TypeVar
 
 from precisely import assert_that, contains_exactly, has_attrs
 import pytest
 from sqlalchemy import Column, create_engine, DateTime, ForeignKey, Integer, select, String
 from sqlalchemy.orm import declarative_base, relationship, Session
 
-### dmq
-
-
-def field_fetcher(from_type, to_type, *, parent_type = None):
-    def f(cls):
-        cls.from_type = from_type
-        cls.to_type = to_type
-        cls.parent_type = parent_type
-
-        return cls
-
-    return f
-
-
-def root_fetcher(from_type, to_type):
-    def f(cls):
-        cls.from_type = from_type
-        cls.to_type = to_type
-
-        return cls
-
-    return f
-
-
-def entity(cls):
-    cls = dataclasses.dataclass(frozen=True)(cls)
-
-    for field in dataclasses.fields(cls):
-        setattr(cls, field.name, field)
-
-    return cls
-
-
-def field(query):
-    return dataclasses.field(metadata={"query": query})
-
-
-T = TypeVar("T")
-
-
-class Query(Generic[T]):
-    result_type: Type[T]
-
-
-class Executor:
-    def __init__(self, *, root_fetchers, field_fetchers):
-        self._root_fetchers = root_fetchers
-        self._field_fetchers = field_fetchers
-
-    def fetch(self, query: Query[T]) -> List[T]:
-        core_type, cores = self._fetch_core(query)
-        return self._add_fields(cores, query, parent_type=core_type)
-
-    def _fetch_core(self, query: Query[T]) -> List[T]:
-        for fetcher in self._root_fetchers:
-            if isinstance(query, fetcher.from_type):
-                return fetcher.to_type, fetcher(self, query)
-
-        raise ValueError(f"could not fetch {query}")
-
-    def _add_fields(self, cores: List[T], query: Query[T], *, parent_type) -> List[T]:
-        extra_field_values: List[Dict[str, Any]] = [{} for _ in cores]
-
-        for field in dataclasses.fields(query.result_type):
-            field_query = field.metadata.get("query")
-            if field_query is not None:
-                field_values = self._fetch_field(field_query, parent_type=parent_type, parents=cores)
-                for field_values, field_value in zip(extra_field_values, field_values):
-                    field_values[field.name] = field_value
-
-        return [
-            query.result_type(**dataclasses.asdict(core), **field_values)  # type: ignore
-            for core, field_values in zip(cores, extra_field_values)
-        ]
-
-    def _fetch_field(self, query, *, parent_type, parents):
-        core_type, cores = self._fetch_field_core(query, parent_type=parent_type, parents=parents)
-
-        def flatten(cores):
-            result = []
-
-            def f(value):
-                if isinstance(value, list):
-                    for element in value:
-                        f(element)
-                else:
-                    result.append(value)
-
-            f(cores)
-
-            return result
-
-        def unflatten(results):
-            results_iter = iter(results)
-
-            def f(value):
-                if isinstance(value, list):
-                    return [f(element) for element in value]
-                else:
-                    return next(results_iter)
-
-            return f(cores)
-
-        return unflatten(self._add_fields(flatten(cores), query, parent_type=core_type))
-
-    def _fetch_field_core(self, query, *, parent_type, parents):
-        for fetcher in self._field_fetchers:
-            if isinstance(query, fetcher.from_type) and fetcher.parent_type == parent_type:
-                return fetcher.to_type, fetcher(self, query, parents=parents)
-
-        raise ValueError(f"could not fetch {query} for field on {parent_type}")
+import dmq
 
 
 ### SQLAlchemy
@@ -131,6 +21,7 @@ Base = declarative_base()
 
 ### Domain
 
+T = TypeVar("T")
 
 @dataclasses.dataclass(frozen=True)
 class Post:
@@ -144,7 +35,7 @@ class Post:
 
 
 @dataclasses.dataclass(frozen=True)
-class PostQuery(Query[T]):
+class PostQuery(dmq.Query[T]):
     result_type: Type[T]
     title: Optional[str]
 
@@ -165,7 +56,7 @@ class Comment:
 
 
 @dataclasses.dataclass(frozen=True)
-class CommentQuery(Query[T]):
+class CommentQuery(dmq.Query[T]):
     result_type: Type[T]
     created_in_last: Optional[timedelta]
 
@@ -183,7 +74,7 @@ class User:
 
 
 @dataclasses.dataclass(frozen=True)
-class UserQuery(Query[T]):
+class UserQuery(dmq.Query[T]):
     result_type: Type[T]
 
 
@@ -220,12 +111,12 @@ class UserModel(Base):
 ### Plumbing
 
 
-@root_fetcher(PostQuery, Post)
+@dmq.root_fetcher(PostQuery, Post)
 class PostFetcher:
     def __init__(self, *, session: Session):
         self._session = session
 
-    def __call__(self, executor: Executor, query: PostQuery[T]) -> List[Post]:
+    def __call__(self, executor: dmq.Executor, query: PostQuery[T]) -> List[Post]:
         sql_query = select(PostModel)
 
         if query.title is not None:
@@ -236,13 +127,13 @@ class PostFetcher:
         return [Post(id=post_model.id, title=post_model.title, body=post_model.body) for post_model in post_models]
 
 
-@field_fetcher(CommentQuery, Comment, parent_type=Post)
+@dmq.field_fetcher(CommentQuery, Comment, parent_type=Post)
 class PostCommentFetcher:
     def __init__(self, *, now: datetime, session: Session):
         self._now = now
         self._session = session
 
-    def __call__(self, executor: Executor, query: CommentQuery, *, parents: List[Post]):
+    def __call__(self, executor: dmq.Executor, query: CommentQuery, *, parents: List[Post]):
         sql_query = select(CommentModel).where(CommentModel.post_id.in_([parent.id for parent in parents]))
 
         if query.created_in_last is not None:
@@ -258,12 +149,12 @@ class PostCommentFetcher:
         return [result[parent.id] for parent in parents]
 
 
-@field_fetcher(UserQuery, User, parent_type=Comment)
+@dmq.field_fetcher(UserQuery, User, parent_type=Comment)
 class CommentAuthorFetcher:
     def __init__(self, *, session: Session):
         self._session = session
 
-    def __call__(self, executor: Executor, query: UserQuery, *, parents: List[Comment]):
+    def __call__(self, executor: dmq.Executor, query: UserQuery, *, parents: List[Comment]):
         sql_query = select(UserModel).where(UserModel.id.in_([parent.author_id for parent in parents]))
 
         user_models = self._session.execute(sql_query).scalars().all()
@@ -285,7 +176,7 @@ def test_can_fetch_all_posts(session: Session) -> None:
     session.add_all([post_model_1, post_model_2])
     session.commit()
 
-    executor = Executor(
+    executor = dmq.Executor(
         root_fetchers=[PostFetcher(session=session)],
         field_fetchers=[],
     )
@@ -310,7 +201,7 @@ def test_can_filter_posts(session: Session) -> None:
     session.add_all([post_model_1, post_model_2])
     session.commit()
 
-    executor = Executor(
+    executor = dmq.Executor(
         root_fetchers=[PostFetcher(session=session)],
         field_fetchers=[],
     )
@@ -335,14 +226,14 @@ def test_can_add_fields_to_objects(session: Session) -> None:
     session.add_all([post_model_1, comment_model_1a, comment_model_1b, post_model_2, comment_model_2a])
     session.commit()
 
-    executor = Executor(
+    executor = dmq.Executor(
         root_fetchers=[PostFetcher(session=session)],
         field_fetchers=[PostCommentFetcher(session=session, now=datetime(2020, 1, 1, 12))],
     )
 
-    @entity
+    @dmq.entity
     class PostWithComments(Post):
-        comments: List[Comment] = field(Comment.query())
+        comments: List[Comment] = dmq.field(Comment.query())
 
     post_query = PostWithComments.query()
     results = executor.fetch(post_query)
@@ -374,14 +265,14 @@ def test_can_filter_fields_added_to_objects(session: Session) -> None:
     session.add_all([post_model_1, comment_model_1a, comment_model_1b, post_model_2, comment_model_2a])
     session.commit()
 
-    executor = Executor(
+    executor = dmq.Executor(
         root_fetchers=[PostFetcher(session=session)],
         field_fetchers=[PostCommentFetcher(session=session, now=datetime(2021, 1, 1, 12))],
     )
 
-    @entity
+    @dmq.entity
     class PostWithRecentComments(Post):
-        recent_comments: List[Comment] = field(Comment.query().recent())
+        recent_comments: List[Comment] = dmq.field(Comment.query().recent())
 
     post_query = PostWithRecentComments.query()
     results = executor.fetch(post_query)
@@ -411,7 +302,7 @@ def test_can_add_subfields_to_fields(session: Session) -> None:
     session.add_all([post_model_1, comment_model_1a, comment_model_1b, post_model_2, comment_model_2a])
     session.commit()
 
-    executor = Executor(
+    executor = dmq.Executor(
         root_fetchers=[PostFetcher(session=session)],
         field_fetchers=[
             PostCommentFetcher(session=session, now=datetime(2021, 1, 1, 12)),
@@ -419,13 +310,13 @@ def test_can_add_subfields_to_fields(session: Session) -> None:
         ],
     )
 
-    @entity
+    @dmq.entity
     class CommentWithAuthor(Comment):
-        author: User = field(User.query())
+        author: User = dmq.field(User.query())
 
-    @entity
+    @dmq.entity
     class PostWithComments(Post):
-        comments: List[CommentWithAuthor] = field(CommentWithAuthor.query())
+        comments: List[CommentWithAuthor] = dmq.field(CommentWithAuthor.query())
 
     post_query = PostWithComments.query()
     results = executor.fetch(post_query)

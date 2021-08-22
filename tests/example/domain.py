@@ -4,8 +4,6 @@ import dataclasses
 from datetime import datetime, timedelta
 from typing import Generic, Optional, Type, TypeVar
 
-import dmq
-
 
 TPost = TypeVar("TPost", bound="Post")
 

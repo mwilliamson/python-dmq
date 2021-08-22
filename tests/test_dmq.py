@@ -9,7 +9,6 @@ from precisely import assert_that, contains_exactly, has_attrs
 import pytest
 from sqlalchemy import Column, create_engine, DateTime, ForeignKey, Integer, select, String
 from sqlalchemy.orm import declarative_base, relationship, Session
-from sqlalchemy.orm.relationships import RelationshipProperty
 
 import dmq
 

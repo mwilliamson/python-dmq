@@ -75,7 +75,7 @@ def test_can_add_fields_to_objects(session: Session) -> None:
 
     @dmq.entity
     class PostWithComments(Post):
-        comments: List[Comment] = dmq.field(Comment.query())
+        comments: List[Comment] = dmq.field(Post.query_comments(Comment))
 
     post_query = PostWithComments.query()
     results = executor.fetch(post_query)
@@ -114,7 +114,7 @@ def test_can_filter_fields_added_to_objects(session: Session) -> None:
 
     @dmq.entity
     class PostWithRecentComments(Post):
-        recent_comments: List[Comment] = dmq.field(Comment.query().recent())
+        recent_comments: List[Comment] = dmq.field(Post.query_comments(Comment).recent())
 
     post_query = PostWithRecentComments.query()
     results = executor.fetch(post_query)
@@ -154,11 +154,11 @@ def test_can_add_subfields_to_fields(session: Session) -> None:
 
     @dmq.entity
     class CommentWithAuthor(Comment):
-        author: User = dmq.field(User.query())
+        author: User = dmq.field(Comment.query_author(User))
 
     @dmq.entity
     class PostWithComments(Post):
-        comments: List[CommentWithAuthor] = dmq.field(CommentWithAuthor.query())
+        comments: List[CommentWithAuthor] = dmq.field(Post.query_comments(CommentWithAuthor))
 
     post_query = PostWithComments.query()
     results = executor.fetch(post_query)

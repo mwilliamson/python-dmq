@@ -18,6 +18,10 @@ class Post:
     def query(cls: Type[TPost]) -> PostQuery[TPost]:
         return PostQuery(cls, title=None)
 
+    @staticmethod
+    def query_comments(cls: Type[TComment]) -> CommentQuery[TComment]:
+        return cls.query()
+
 
 @dataclasses.dataclass(frozen=True)
 class PostQuery(Generic[TPost]):
@@ -41,6 +45,10 @@ class Comment:
     @classmethod
     def query(cls: Type[TComment]) -> CommentQuery[TComment]:
         return CommentQuery(cls, created_in_last=None)
+
+    @staticmethod
+    def query_author(cls: Type[TUser]) -> UserQuery[TUser]:
+        return cls.query()
 
 
 @dataclasses.dataclass(frozen=True)

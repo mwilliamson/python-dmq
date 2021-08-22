@@ -79,6 +79,8 @@ class Executor:
 
     def _fetch_field(self, query, *, parent_type, parents):
         core_type, cores = self._fetch_field_core(query, parent_type=parent_type, parents=parents)
+        if core_type == query.element_type:
+            return cores
 
         def flatten(cores):
             result = []
@@ -112,4 +114,4 @@ class Executor:
             if isinstance(query, fetcher.from_type) and fetcher.parent_type == parent_type:
                 return fetcher.to_type, fetcher(self, query, parents=parents)
 
-        raise ValueError(f"could not fetch {query} for field on {parent_type}")
+        raise ValueError(f"Missing field fetcher for query of type {type(query).__qualname__} on {parent_type.__qualname__}")

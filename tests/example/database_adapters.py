@@ -10,7 +10,7 @@ from . import database
 from .domain import Comment, CommentQuery, Post, PostQuery, User, UserQuery
 
 
-T = TypeVar("T")
+TPost = TypeVar("TPost", bound=Post)
 
 
 @dmq.root_fetcher(PostQuery, Post)
@@ -18,15 +18,15 @@ class PostFetcher:
     def __init__(self, *, session: Session):
         self._session = session
 
-    def __call__(self, executor: dmq.Executor, query: PostQuery[T]) -> List[Post]:
+    def __call__(self, executor: dmq.Executor, query: PostQuery[TPost]) -> List[Post]:
         sql_query = select(database.Post)
 
         if query.title is not None:
             sql_query = sql_query.filter(database.Post.title == query.title)
 
-        post_models = self._session.execute(sql_query).scalars().all()
+        post_rows = self._session.execute(sql_query).scalars().all()
 
-        return [Post(id=post_model.id, title=post_model.title, body=post_model.body) for post_model in post_models]
+        return [Post(id=post_model.id, title=post_model.title, body=post_model.body) for post_model in post_rows]
 
 
 @dmq.field_fetcher(CommentQuery, Comment, parent_type=Post)
@@ -41,10 +41,10 @@ class PostCommentFetcher:
         if query.created_in_last is not None:
             sql_query = sql_query.filter(database.Comment.created_at >= (self._now - query.created_in_last))
 
-        comment_models = self._session.execute(sql_query).scalars().all()
+        comment_rows = self._session.execute(sql_query).scalars().all()
 
         result = collections.defaultdict(list)
-        for comment_model in comment_models:
+        for comment_model in comment_rows:
             comment = Comment(id=comment_model.id, author_id=comment_model.author_id, body=comment_model.body, created_at=comment_model.created_at)
             result[comment_model.post_id].append(comment)
 
@@ -59,11 +59,11 @@ class CommentAuthorFetcher:
     def __call__(self, executor: dmq.Executor, query: UserQuery, *, parents: List[Comment]):
         sql_query = select(database.User).where(database.User.id.in_([parent.author_id for parent in parents]))
 
-        user_models = self._session.execute(sql_query).scalars().all()
+        user_rows = self._session.execute(sql_query).scalars().all()
 
         result = {
             user_model.id: User(username=user_model.username)
-            for user_model in user_models
+            for user_model in user_rows
         }
 
         return [result[parent.author_id] for parent in parents]

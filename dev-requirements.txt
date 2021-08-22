@@ -2,3 +2,4 @@ mypy
 precisely
 pytest
 sqlalchemy[mypy]>=1.4,<2.0
+typing-extensions

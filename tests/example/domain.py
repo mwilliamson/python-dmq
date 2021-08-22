@@ -2,12 +2,12 @@ from __future__ import annotations
 
 import dataclasses
 from datetime import datetime, timedelta
-from typing import List, Optional, Type, TypeVar
+from typing import Generic, Optional, Type, TypeVar
 
 import dmq
 
 
-T = TypeVar("T")
+TPost = TypeVar("TPost", bound="Post")
 
 
 @dataclasses.dataclass(frozen=True)
@@ -17,17 +17,20 @@ class Post:
     body: str
 
     @classmethod
-    def query(cls: Type[T]) -> PostQuery[T]:
+    def query(cls: Type[TPost]) -> PostQuery[TPost]:
         return PostQuery(cls, title=None)
 
 
 @dataclasses.dataclass(frozen=True)
-class PostQuery(dmq.Query[T]):
-    result_type: Type[T]
+class PostQuery(Generic[TPost]):
+    element_type: Type[TPost]
     title: Optional[str]
 
-    def has_title(self, title: str) -> PostQuery[T]:
+    def has_title(self, title: str) -> PostQuery[TPost]:
         return dataclasses.replace(self, title=title)
+
+
+TComment = TypeVar("TComment", bound="Comment")
 
 
 @dataclasses.dataclass(frozen=True)
@@ -38,17 +41,20 @@ class Comment:
     body: str
 
     @classmethod
-    def query(cls: Type[T]) -> CommentQuery:
+    def query(cls: Type[TComment]) -> CommentQuery[TComment]:
         return CommentQuery(cls, created_in_last=None)
 
 
 @dataclasses.dataclass(frozen=True)
-class CommentQuery(dmq.Query[T]):
-    result_type: Type[T]
+class CommentQuery(Generic[TComment]):
+    element_type: Type[TComment]
     created_in_last: Optional[timedelta]
 
     def recent(self) -> CommentQuery:
         return dataclasses.replace(self, created_in_last=timedelta(days=1))
+
+
+TUser = TypeVar("TUser", bound="User")
 
 
 @dataclasses.dataclass(frozen=True)
@@ -61,5 +67,5 @@ class User:
 
 
 @dataclasses.dataclass(frozen=True)
-class UserQuery(dmq.Query[T]):
-    result_type: Type[T]
+class UserQuery(Generic[TUser]):
+    element_type: Type[TUser]

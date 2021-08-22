@@ -1,5 +1,6 @@
 import dataclasses
-from typing import Any, Dict, Generic, List, Tuple, Type, TypeVar
+from typing import Any, Dict, List, Tuple, Type, TypeVar
+from typing_extensions import Protocol
 
 
 def field_fetcher(from_type, to_type, *, parent_type = None):
@@ -36,11 +37,13 @@ def field(query):
     return dataclasses.field(metadata={"query": query})
 
 
-T = TypeVar("T")
+T = TypeVar("T", covariant=True)
 
 
-class Query(Generic[T]):
-    result_type: Type[T]
+class Query(Protocol[T]):
+    @property
+    def element_type(self) -> Type[T]:
+        pass
 
 
 class Executor:
@@ -62,7 +65,7 @@ class Executor:
     def _add_fields(self, cores: List[T], query: Query[T], *, parent_type) -> List[T]:
         extra_field_values: List[Dict[str, Any]] = [{} for _ in cores]
 
-        for field in dataclasses.fields(query.result_type):
+        for field in dataclasses.fields(query.element_type):
             field_query = field.metadata.get("query")
             if field_query is not None:
                 field_values = self._fetch_field(field_query, parent_type=parent_type, parents=cores)
@@ -70,7 +73,7 @@ class Executor:
                     field_values[field.name] = field_value
 
         return [
-            query.result_type(**dataclasses.asdict(core), **field_values)  # type: ignore
+            query.element_type(**dataclasses.asdict(core), **field_values)  # type: ignore
             for core, field_values in zip(cores, extra_field_values)
         ]
 
